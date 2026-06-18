@@ -1,0 +1,88 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "31 8 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trivy:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Run Trivy vulnerability scanner
+        id: trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        continue-on-error: true
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
+        if: always() && github.repository_visibility == 'public'
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Fail on Trivy findings
+        if: steps.trivy.outcome == 'failure'
+        run: exit 1
+
+  mcp-scan:
+    name: MCP prompt-safety scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build MCP package
+        run: pnpm build
+
+      - name: Scan MCP tool metadata
+        id: mcp_scan
+        continue-on-error: true
+        run: npx -y @agentdefenders/mcp-scan@0.5.0-alpha --config .github/mcp-scan.json --format sarif --fail-on high > mcp-scan.sarif
+
+      - name: Upload MCP scan SARIF
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
+        if: always() && github.repository_visibility == 'public'
+        with:
+          sarif_file: mcp-scan.sarif
+
+      - name: Fail on MCP scan findings
+        if: steps.mcp_scan.outcome == 'failure'
+        run: exit 1
+

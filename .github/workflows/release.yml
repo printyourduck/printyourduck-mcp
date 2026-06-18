@@ -1,0 +1,193 @@
+name: Release MCP
+
+on:
+  push:
+    tags:
+      - mcp-v*
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run release validation without publishing.
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: mcp-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/printyourduck-mcp
+  LOCAL_IMAGE_NAME: printyourduck-mcp:release-candidate
+  MCP_PUBLISHER_VERSION: 1.7.9
+  MCP_PUBLISHER_LINUX_AMD64_SHA256: ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.mode.outputs.publish }}
+      version: ${{ steps.mode.outputs.version }}
+      package_private: ${{ steps.mode.outputs.package_private }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve release mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          package_private="$(node -p "Boolean(require('./package.json').private)")"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#mcp-v}"
+            publish="true"
+          else
+            version="${package_version}"
+            publish="false"
+          fi
+
+          if [[ "${version}" != "${package_version}" ]]; then
+            echo "::error::Release version ${version} does not match package version ${package_version}."
+            exit 1
+          fi
+
+          echo "publish=${publish}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "package_private=${package_private}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install pinned MCP publisher
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          publisher_archive="/tmp/mcp-publisher.tar.gz"
+          curl -sSfL "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" -o "${publisher_archive}"
+          echo "${MCP_PUBLISHER_LINUX_AMD64_SHA256}  ${publisher_archive}" | sha256sum -c -
+          tar -xzf "${publisher_archive}" -C "$HOME/.local/bin" mcp-publisher
+          chmod +x "$HOME/.local/bin/mcp-publisher"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Validate MCP Registry metadata
+        run: mcp-publisher validate
+
+      - name: Run release checks
+        run: pnpm check:release
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Build release-candidate MCP image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: ${{ env.LOCAL_IMAGE_NAME }}
+          labels: |
+            org.opencontainers.image.title=PrintYourDuck MCP
+            org.opencontainers.image.description=Local MCP helper for PrintYourDuck manual quote review
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.mode.outputs.version }}
+
+      - name: Scan release-candidate MCP image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ env.LOCAL_IMAGE_NAME }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Block publish while package is private
+        if: steps.mode.outputs.publish == 'true' && steps.mode.outputs.package_private == 'true'
+        run: |
+          echo "::error::package.json is private. Remove private:true only when npm/GHCR/MCP Registry release is intentionally ready."
+          exit 1
+
+  release:
+    if: needs.checks.outputs.publish == 'true' && needs.checks.outputs.package_private != 'true'
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Pack npm package
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_json="$(npm pack --json --ignore-scripts)"
+          filename="$(node -e "const fs=require('node:fs'); const data=JSON.parse(fs.readFileSync(0,'utf8')); process.stdout.write(data[0].filename)" <<< "${pack_json}")"
+          echo "filename=${filename}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish npm package
+        run: npm publish --access public --provenance
+
+      - name: Attest npm package archive
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: ${{ steps.pack.outputs.filename }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish MCP image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ needs.checks.outputs.version }}
+            ${{ env.IMAGE_NAME }}:latest
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.checks.outputs.version }}
+        run: gh release create "mcp-v${VERSION}" --generate-notes --verify-tag

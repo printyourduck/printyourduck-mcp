@@ -1,0 +1,31 @@
+name: MCP client setup
+description: Ask for help configuring a client.
+title: "[Setup]: "
+labels: ["mcp-client", "question"]
+body:
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public safety check
+      options:
+        - label: I did not include secrets, customer files, private file references, supplier/cost/margin details, or dashboard screenshots.
+          required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client and version
+      placeholder: Claude Code 1.x, Codex CLI, Cursor, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Redacted config
+      render: json
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is not working?
+    validations:
+      required: true
+

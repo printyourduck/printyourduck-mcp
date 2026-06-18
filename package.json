@@ -1,0 +1,63 @@
+{
+  "name": "@printyourduck/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local MCP helper for submitting 3D print files to PrintYourDuck manual quote review.",
+  "type": "module",
+  "homepage": "https://printyourduck.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/printyourduck/printyourduck-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/printyourduck/printyourduck-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "3d-printing",
+    "printyourduck",
+    "quote"
+  ],
+  "bin": {
+    "printyourduck-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "mcpName": "com.printyourduck/quote",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "pnpm lint && pnpm test && pnpm typecheck",
+    "check:mcp": "pnpm build && node scripts/check-mcp.mjs",
+    "check:pack": "pnpm build && node scripts/check-package.mjs",
+    "check:release": "pnpm check && pnpm check:security && pnpm check:pack && pnpm check:mcp",
+    "check:secrets": "gitleaks detect --source . --redact && trufflehog git file://$PWD --no-update --fail --only-verified",
+    "check:security": "pnpm audit --prod && pnpm check:secrets",
+    "lint": "eslint .",
+    "pack:dry-run": "npm pack --dry-run --json --ignore-scripts",
+    "prepack": "pnpm build",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.26.0",
+    "@vercel/blob": "2.4.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^24",
+    "eslint": "^9.39.4",
+    "typescript": "5.7.3",
+    "typescript-eslint": "^8.50.1",
+    "vitest": "^4.1.9"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264"
+}
