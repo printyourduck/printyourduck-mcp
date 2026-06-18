@@ -44,7 +44,6 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
           registry-url: https://registry.npmjs.org
 
       - name: Resolve release mode
@@ -150,6 +149,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install pinned MCP publisher
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          publisher_archive="/tmp/mcp-publisher.tar.gz"
+          curl -sSfL "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" -o "${publisher_archive}"
+          echo "${MCP_PUBLISHER_LINUX_AMD64_SHA256}  ${publisher_archive}" | sha256sum -c -
+          tar -xzf "${publisher_archive}" -C "$HOME/.local/bin" mcp-publisher
+          chmod +x "$HOME/.local/bin/mcp-publisher"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate to MCP Registry
+        run: mcp-publisher login github-oidc
+
+      - name: Validate MCP Registry metadata
+        run: mcp-publisher validate
+
       - name: Pack npm package
         id: pack
         shell: bash
@@ -160,7 +176,18 @@ jobs:
           echo "filename=${filename}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish npm package
-        run: npm publish --access public --provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "${package_name}@${package_version} is already published; skipping npm publish."
+            exit 0
+          fi
+
+          npm publish --access public
 
       - name: Attest npm package archive
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32
@@ -190,4 +217,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.checks.outputs.version }}
-        run: gh release create "mcp-v${VERSION}" --generate-notes --verify-tag
+        run: gh release view "mcp-v${VERSION}" >/dev/null 2>&1 || gh release create "mcp-v${VERSION}" --generate-notes --verify-tag
+
+      - name: Publish MCP Registry metadata
+        run: |
+          mcp-publisher login github-oidc
+          mcp-publisher publish
