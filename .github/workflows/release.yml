@@ -25,6 +25,10 @@ env:
   LOCAL_IMAGE_NAME: printyourduck-mcp:release-candidate
   MCP_PUBLISHER_VERSION: 1.7.9
   MCP_PUBLISHER_LINUX_AMD64_SHA256: ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_LINUX_X64_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  TRUFFLEHOG_VERSION: 3.95.3
+  TRUFFLEHOG_LINUX_AMD64_SHA256: 5d836eae522540a32ca0f1a1e00efd4c3153a52462466a4b4008fac1e6c1a548
 
 jobs:
   checks:
@@ -88,6 +92,23 @@ jobs:
 
       - name: Validate MCP Registry metadata
         run: mcp-publisher validate
+
+      - name: Install security scanners
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+
+          gitleaks_archive="/tmp/gitleaks.tar.gz"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o "${gitleaks_archive}"
+          echo "${GITLEAKS_LINUX_X64_SHA256}  ${gitleaks_archive}" | sha256sum -c -
+          tar -xzf "${gitleaks_archive}" -C "$HOME/.local/bin" gitleaks
+
+          trufflehog_archive="/tmp/trufflehog.tar.gz"
+          curl -sSfL "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz" -o "${trufflehog_archive}"
+          echo "${TRUFFLEHOG_LINUX_AMD64_SHA256}  ${trufflehog_archive}" | sha256sum -c -
+          tar -xzf "${trufflehog_archive}" -C "$HOME/.local/bin" trufflehog
+          chmod +x "$HOME/.local/bin/gitleaks" "$HOME/.local/bin/trufflehog"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run release checks
         run: pnpm check:release
