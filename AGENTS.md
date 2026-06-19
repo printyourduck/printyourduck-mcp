@@ -38,16 +38,29 @@ Vercel deployment, or hosted `/api/mcp` implementation.
 
 ## Release Truth
 
-The package is private until npm, GHCR, GitHub release, and MCP Registry
-publication are deliberately enabled. Do not add npm/GHCR badges or active
-install claims before public artifacts exist.
+Publish claims should match observed evidence in this repository and GitHub/Registry
+checks.
 
-Before claiming installability, verify:
+Do not hard-code a public artifact state without checking it live. The current
+release target is the version in `package.json`; npm, GitHub release, GHCR, and
+MCP Registry can each be ahead of or behind the local checkout.
+
+Current `server.json` advertises the npm package only. Do not add the GHCR image
+to registry metadata until anonymous `docker manifest inspect` works for the
+target image version.
+
+Before claiming registry/public-installation readiness, verify:
 
 ```bash
 npm view @printyourduck/mcp version
-docker manifest inspect ghcr.io/printyourduck/printyourduck-mcp:<version>
 gh release view mcp-v<version>
+curl -f "https://registry.modelcontextprotocol.io/v0/servers/com.printyourduck%2Fquote/versions"
+```
+
+Before claiming container readiness, also verify:
+
+```bash
+docker manifest inspect ghcr.io/printyourduck/printyourduck-mcp:<version>
 ```
 
 ## Testing Expectations

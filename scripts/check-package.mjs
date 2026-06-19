@@ -72,7 +72,7 @@ if (npmPackage?.version !== packageJson.version) {
 }
 
 const ociPackage = serverJson.packages?.find((entry) => entry.registryType === 'oci')
-if (ociPackage?.identifier !== `ghcr.io/printyourduck/printyourduck-mcp:${packageJson.version}`) {
+if (ociPackage && ociPackage.identifier !== `ghcr.io/printyourduck/printyourduck-mcp:${packageJson.version}`) {
   fail('server.json OCI package identifier must match package version.')
 }
 

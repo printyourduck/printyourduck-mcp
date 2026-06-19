@@ -42,24 +42,35 @@ function validQuoteInput(filePath: string, overrides: Record<string, unknown> = 
 
 describe('PrintYourDuck local MCP submit helpers', () => {
   let previousAllowedRoots: string | undefined
+  let previousCacheDir: string | undefined
+  let cacheRoot: string
 
-  beforeEach(() => {
+  beforeEach(async () => {
     previousAllowedRoots = process.env.PRINTYOURDUCK_MCP_ALLOWED_ROOTS
+    previousCacheDir = process.env.PRINTYOURDUCK_MCP_CACHE_DIR
+    cacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'printyourduck-mcp-cache-'))
+    process.env.PRINTYOURDUCK_MCP_CACHE_DIR = cacheRoot
     vi.stubGlobal('fetch', fetchMock)
     uploadMock.mockReset()
     fetchMock.mockReset()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     if (previousAllowedRoots === undefined) {
       delete process.env.PRINTYOURDUCK_MCP_ALLOWED_ROOTS
     } else {
       process.env.PRINTYOURDUCK_MCP_ALLOWED_ROOTS = previousAllowedRoots
     }
+    if (previousCacheDir === undefined) {
+      delete process.env.PRINTYOURDUCK_MCP_CACHE_DIR
+    } else {
+      process.env.PRINTYOURDUCK_MCP_CACHE_DIR = previousCacheDir
+    }
+    await fs.rm(cacheRoot, { recursive: true, force: true })
     vi.unstubAllGlobals()
   })
 
-  it('submits a local file with content hash and explicit user confirmation', async () => {
+  it('uploads a missing local file, then submits with content hash and explicit user confirmation', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'printyourduck-mcp-'))
     process.env.PRINTYOURDUCK_MCP_ALLOWED_ROOTS = root
 
@@ -72,10 +83,79 @@ describe('PrintYourDuck local MCP submit helpers', () => {
         .digest('hex')
 
       await fs.writeFile(filePath, fileContent)
-      uploadMock.mockResolvedValue({
-        pathname: 'quote-requests/123-part.stl',
+      const expectedStoragePath = expect.stringMatching(
+        new RegExp(
+          `^quote-requests/mcp-local-mcp-local-[a-f0-9]{48}-${expectedHash.slice(0, 16)}-part\\.stl$`,
+        ),
+      )
+      uploadMock.mockImplementation(async (pathname) => ({ pathname }))
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse(
+            {
+              error: 'validation_failed',
+              message: 'Uploaded file was not found.',
+              issues: [
+                {
+                  field: 'files.0.storageUrlOrKey',
+                  message: 'Uploaded file was not found.',
+                },
+              ],
+            },
+            { status: 400 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(
+            {
+              quoteRequestId: 'qr_123',
+              status: 'manual_review_required',
+              message: 'Accepted.',
+              expectedQuoteTime: 'within 24 hours',
+            },
+            { status: 201 },
+          ),
+        )
+
+      const result = await submitLocalFileForQuote(validQuoteInput(filePath))
+      const firstRequestBody = JSON.parse(fetchMock.mock.calls[0][1].body)
+      const secondRequestBody = JSON.parse(fetchMock.mock.calls[1][1].body)
+
+      expect(result).toMatchObject({
+        ok: true,
+        quoteRequestId: 'qr_123',
       })
-      fetchMock.mockResolvedValue(
+      expect(uploadMock).toHaveBeenCalledWith(
+        expectedStoragePath,
+        expect.any(Blob),
+        expect.objectContaining({
+          access: 'private',
+          handleUploadUrl: 'https://printyourduck.com/api/upload',
+        }),
+      )
+      expect(firstRequestBody).toEqual(secondRequestBody)
+      expect(firstRequestBody).toMatchObject({
+        source: 'mcp-local',
+        userSubmissionConfirmed: true,
+      })
+      expect(firstRequestBody.files[0]).toMatchObject({
+        originalFilename: 'part.stl',
+        storageUrlOrKey: expectedStoragePath,
+        contentHash: expectedHash,
+      })
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not upload again when the deterministic retry is already idempotent', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'printyourduck-mcp-'))
+    process.env.PRINTYOURDUCK_MCP_ALLOWED_ROOTS = root
+
+    try {
+      const filePath = path.join(root, 'part.stl')
+      await fs.writeFile(filePath, 'solid test\nendsolid test\n')
+      fetchMock.mockResolvedValueOnce(
         jsonResponse(
           {
             quoteRequestId: 'qr_123',
@@ -88,29 +168,13 @@ describe('PrintYourDuck local MCP submit helpers', () => {
       )
 
       const result = await submitLocalFileForQuote(validQuoteInput(filePath))
-      const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body)
 
       expect(result).toMatchObject({
         ok: true,
         quoteRequestId: 'qr_123',
       })
-      expect(uploadMock).toHaveBeenCalledWith(
-        expect.stringMatching(/^quote-requests\/\d+-part\.stl$/),
-        expect.any(Blob),
-        expect.objectContaining({
-          access: 'private',
-          handleUploadUrl: 'https://printyourduck.com/api/upload',
-        }),
-      )
-      expect(requestBody).toMatchObject({
-        source: 'mcp-local',
-        userSubmissionConfirmed: true,
-      })
-      expect(requestBody.files[0]).toMatchObject({
-        originalFilename: 'part.stl',
-        storageUrlOrKey: 'quote-requests/123-part.stl',
-        contentHash: expectedHash,
-      })
+      expect(uploadMock).not.toHaveBeenCalled()
+      expect(fetchMock).toHaveBeenCalledTimes(1)
     } finally {
       await fs.rm(root, { recursive: true, force: true })
     }
@@ -123,10 +187,7 @@ describe('PrintYourDuck local MCP submit helpers', () => {
     try {
       const filePath = path.join(root, 'part.stl')
       await fs.writeFile(filePath, 'solid test\nendsolid test\n')
-      uploadMock.mockResolvedValue({
-        pathname: 'quote-requests/123-part.stl',
-      })
-      fetchMock.mockResolvedValue(
+      fetchMock.mockResolvedValueOnce(
         jsonResponse(
           {
             error: 'validation_failed',
@@ -143,6 +204,122 @@ describe('PrintYourDuck local MCP submit helpers', () => {
         error: 'validation_failed',
         message: 'Please check the quote request fields.',
       })
+      expect(uploadMock).not.toHaveBeenCalled()
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the returned upload pathname and caches it for random-suffix deployments', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'printyourduck-mcp-'))
+    process.env.PRINTYOURDUCK_MCP_ALLOWED_ROOTS = root
+
+    try {
+      const filePath = path.join(root, 'part.stl')
+      await fs.writeFile(filePath, 'solid test\nendsolid test\n')
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse(
+            {
+              error: 'validation_failed',
+              message: 'Uploaded file was not found.',
+              issues: [
+                {
+                  field: 'files.0.storageUrlOrKey',
+                  message: 'Uploaded file was not found.',
+                },
+              ],
+            },
+            { status: 400 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(
+            {
+              quoteRequestId: 'qr_123',
+              status: 'manual_review_required',
+              message: 'Accepted.',
+              expectedQuoteTime: 'within 24 hours',
+            },
+            { status: 201 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(
+            {
+              quoteRequestId: 'qr_123',
+              status: 'manual_review_required',
+              message: 'Accepted.',
+              expectedQuoteTime: 'within 24 hours',
+            },
+            { status: 201 },
+          ),
+        )
+      uploadMock.mockResolvedValueOnce({
+        pathname: 'quote-requests/randomized-part.stl',
+      })
+
+      await expect(submitLocalFileForQuote(validQuoteInput(filePath))).resolves.toMatchObject({
+        ok: true,
+        quoteRequestId: 'qr_123',
+      })
+      await expect(submitLocalFileForQuote(validQuoteInput(filePath))).resolves.toMatchObject({
+        ok: true,
+        quoteRequestId: 'qr_123',
+      })
+
+      expect(uploadMock).toHaveBeenCalledTimes(1)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+      const firstBody = JSON.parse(fetchMock.mock.calls[0][1].body)
+      const secondBody = JSON.parse(fetchMock.mock.calls[1][1].body)
+      const thirdBody = JSON.parse(fetchMock.mock.calls[2][1].body)
+
+      expect(firstBody.files[0].storageUrlOrKey).toMatch(
+        /^quote-requests\/mcp-local-/,
+      )
+      expect(secondBody.files[0].storageUrlOrKey).toBe(
+        'quote-requests/randomized-part.stl',
+      )
+      expect(thirdBody.files[0].storageUrlOrKey).toBe(
+        'quote-requests/randomized-part.stl',
+      )
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fails safely when upload returns an invalid pathname', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'printyourduck-mcp-'))
+    process.env.PRINTYOURDUCK_MCP_ALLOWED_ROOTS = root
+
+    try {
+      const filePath = path.join(root, 'part.stl')
+      await fs.writeFile(filePath, 'solid test\nendsolid test\n')
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: 'validation_failed',
+            message: 'Uploaded file was not found.',
+            issues: [
+              {
+                field: 'files.0.storageUrlOrKey',
+                message: 'Uploaded file was not found.',
+              },
+            ],
+          },
+          { status: 400 },
+        ),
+      )
+      uploadMock.mockResolvedValueOnce({
+        pathname: 'outside/randomized-part.stl',
+      })
+
+      await expect(submitLocalFileForQuote(validQuoteInput(filePath))).resolves.toMatchObject({
+        ok: false,
+        error: 'upload_path_invalid',
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
     } finally {
       await fs.rm(root, { recursive: true, force: true })
     }

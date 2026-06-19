@@ -21,13 +21,13 @@ to supply an API URL, API key, or shop routing configuration.
 | Surface | Status |
 | --- | --- |
 | Remote MCP | Live at `https://printyourduck.com/api/mcp` |
-| Local stdio package | Pre-publication |
-| npm package | Planned: `@printyourduck/mcp` |
-| OCI image | Planned: `ghcr.io/printyourduck/printyourduck-mcp` |
-| MCP Registry | Planned after npm/GHCR/GitHub release artifacts exist |
+| Local stdio package | Available via npm as `@printyourduck/mcp` |
+| npm package | Public: `@printyourduck/mcp` |
+| OCI image | Release target: `ghcr.io/printyourduck/printyourduck-mcp:<version>` |
+| MCP Registry | Publish target: `com.printyourduck/quote` |
 
-Until those package artifacts are public, treat `npx` and Docker commands below
-as post-publication examples.
+`npx` is the primary install path today. Use Docker only after verifying the
+GHCR image is publicly pullable for the target version.
 
 ## Why This Exists
 
@@ -47,7 +47,7 @@ checkout, or expose private operational details.
 
 ## Install
 
-After npm publication:
+Use this now:
 
 ```bash
 npx -y @printyourduck/mcp
@@ -66,7 +66,7 @@ Most stdio-capable MCP clients use a configuration like this:
 }
 ```
 
-Docker after OCI publication:
+Docker, after verifying the GHCR image is public:
 
 ```bash
 docker run --rm -i ghcr.io/printyourduck/printyourduck-mcp:<version>
@@ -93,7 +93,10 @@ the MCP client should access additional project directories.
 
 `submit_local_file_for_quote` derives a stable `submissionId` from the selected
 file and quote details unless the caller provides one. Reuse that ID on retry to
-avoid duplicate manual quote requests.
+avoid duplicate manual quote requests. The helper also caches the uploaded
+private file key locally by `submissionId` and file hash so retries can reuse the
+same uploaded file reference when the upload service returns a generated Blob
+key.
 
 ## Guardrails
 
@@ -144,19 +147,17 @@ submits one manual quote request, and verifies `get_quote_status` returns.
 
 ## Release Checklist
 
-Only claim public local-helper installability after all of these pass:
+Only claim npm local-helper installability after all of these pass:
 
 ```bash
 pnpm check:release
 npm view @printyourduck/mcp version
 VERSION="$(npm view @printyourduck/mcp version)"
-docker manifest inspect "ghcr.io/printyourduck/printyourduck-mcp:${VERSION}"
 gh release view "mcp-v${VERSION}"
 PRINTYOURDUCK_MCP_LIVE_SMOKE=1 PRINTYOURDUCK_MCP_SMOKE_EMAIL=operator@example.com pnpm smoke:live
 ```
 
-When the package is deliberately ready for publication, remove `private: true`
-from `package.json` and release from this dedicated MCP repository, not from the
+Release npm package changes from this dedicated MCP repository, not from the
 website repository.
 
 The MCP Registry name is `com.printyourduck/quote`, so publication uses
@@ -164,6 +165,20 @@ domain-based HTTP authentication for `printyourduck.com`. Serve the public
 `v=MCPv1; ...` record from `https://printyourduck.com/.well-known/mcp-registry-auth`
 and keep the matching private key only in the `MCP_REGISTRY_PRIVATE_KEY` GitHub
 Actions secret for this repository.
+
+Only claim MCP Registry publication after this passes:
+
+```bash
+curl -f "https://registry.modelcontextprotocol.io/v0/servers/com.printyourduck%2Fquote/versions"
+```
+
+Only claim OCI/container installability after making package visibility public
+and running:
+
+```bash
+VERSION="$(node -p "require('./package.json').version")"
+docker manifest inspect "ghcr.io/printyourduck/printyourduck-mcp:${VERSION}"
+```
 
 ## Contributing
 

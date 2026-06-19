@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { upload } from '@vercel/blob/client'
@@ -30,6 +31,7 @@ const ACCEPTED_FILE_EXTENSIONS = ['STL', 'STEP', 'STP', '3MF', 'OBJ', 'ZIP'] as 
 const DEFAULT_API_BASE_URL = 'https://printyourduck.com'
 const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024
 const DEFAULT_ALLOWED_ROOTS = [process.cwd()]
+const SUBMISSION_CACHE_FILENAME = 'submissions.json'
 const SERVER_INSTRUCTIONS = `
 PrintYourDuck local MCP helps coding agents submit one selected local 3D file
 for manual quote review. It does not calculate instant prices, collect payment
@@ -97,6 +99,124 @@ function configuredAllowedRoots() {
     .filter(Boolean)
 
   return roots.length > 0 ? roots : DEFAULT_ALLOWED_ROOTS
+}
+
+function configuredSubmissionCachePath() {
+  const configured = process.env.PRINTYOURDUCK_MCP_CACHE_DIR?.trim()
+  const cacheDirectory = configured || path.join(os.homedir(), '.cache', 'printyourduck-mcp')
+
+  return path.join(cacheDirectory, SUBMISSION_CACHE_FILENAME)
+}
+
+function submissionCacheKey({
+  submissionId,
+  contentHash,
+}: {
+  submissionId: string
+  contentHash: string
+}) {
+  return `${submissionId}:${contentHash}`
+}
+
+async function readCachedStoragePath(input: {
+  submissionId: string
+  contentHash: string
+}) {
+  try {
+    const cache = JSON.parse(
+      await fs.readFile(configuredSubmissionCachePath(), 'utf8'),
+    ) as {
+      submissions?: Record<string, { storageUrlOrKey?: unknown }>
+    }
+    const storageUrlOrKey =
+      cache.submissions?.[submissionCacheKey(input)]?.storageUrlOrKey
+
+    return typeof storageUrlOrKey === 'string' &&
+      storageUrlOrKey.startsWith('quote-requests/')
+      ? storageUrlOrKey
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function rememberStoragePath(input: {
+  submissionId: string
+  contentHash: string
+  storageUrlOrKey: string
+}) {
+  try {
+    const cachePath = configuredSubmissionCachePath()
+    await fs.mkdir(path.dirname(cachePath), { recursive: true })
+
+    let cache: {
+      version: number
+      submissions: Record<string, { storageUrlOrKey: string; updatedAt: string }>
+    } = {
+      version: 1,
+      submissions: {},
+    }
+
+    try {
+      cache = {
+        ...cache,
+        ...JSON.parse(await fs.readFile(cachePath, 'utf8')),
+      }
+      cache.submissions ??= {}
+    } catch {
+      // Missing or unreadable cache files should not block quote submission.
+    }
+
+    cache.version = 1
+    cache.submissions[submissionCacheKey(input)] = {
+      storageUrlOrKey: input.storageUrlOrKey,
+      updatedAt: new Date().toISOString(),
+    }
+
+    await fs.writeFile(cachePath, `${JSON.stringify(cache, null, 2)}\n`)
+  } catch {
+    // The cache only improves retries; upload and quote submission can continue.
+  }
+}
+
+function apiErrorMessage(result: Record<string, unknown> | null) {
+  return typeof result?.message === 'string'
+    ? result.message
+    : 'Quote request could not be submitted.'
+}
+
+function apiErrorCode(result: Record<string, unknown> | null) {
+  return typeof result?.error === 'string' ? result.error : 'submit_failed'
+}
+
+function isMissingUploadedFileResponse(result: Record<string, unknown> | null) {
+  if (result?.error !== 'validation_failed' || !Array.isArray(result.issues)) {
+    return false
+  }
+
+  return result.issues.some((issue) => (
+    typeof issue === 'object' &&
+    issue !== null &&
+    'field' in issue &&
+    issue.field === 'files.0.storageUrlOrKey' &&
+    'message' in issue &&
+    issue.message === 'Uploaded file was not found.'
+  ))
+}
+
+async function postQuoteRequest(payload: Record<string, unknown>) {
+  const response = await fetch(endpoint(DEFAULT_API_BASE_URL, '/api/quote-requests'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  const result = (await response.json().catch(() => null)) as
+    | Record<string, unknown>
+    | null
+
+  return { response, result }
 }
 
 export function quoteRequirements() {
@@ -226,8 +346,59 @@ export async function submitLocalFileForQuote(input: z.infer<z.ZodObject<typeof 
       quantity: input.quantity,
     })
   const blob = new Blob([file], { type: contentType })
+  const deterministicStoragePath = `quote-requests/mcp-local-${submissionId}-${contentHash.slice(0, 16)}-${safeBlobName(filename)}`
+  const cachedStoragePath = await readCachedStoragePath({
+    submissionId,
+    contentHash,
+  })
+  const initialStoragePath = cachedStoragePath ?? deterministicStoragePath
+  const payloadForStoragePath = (storagePath: string) => ({
+    submissionId,
+    name: input.name,
+    email: input.email,
+    phone: input.phone,
+    city: input.city,
+    country: input.country,
+    materialPreference: input.materialPreference,
+    quantity: input.quantity,
+    desiredDeadline: input.desiredDeadline,
+    notes: input.notes,
+    rightsConfirmed: input.rightsConfirmed,
+    restrictedItemConfirmed: input.restrictedItemConfirmed,
+    manualQuoteConfirmed: input.manualQuoteConfirmed,
+    userSubmissionConfirmed: input.userSubmissionConfirmed,
+    files: [
+      {
+        originalFilename: filename,
+        storedFilename: storagePath,
+        fileType: extension.replace('.', ''),
+        fileSizeBytes,
+        storageUrlOrKey: storagePath,
+        contentType,
+        contentHash,
+      },
+    ],
+    source: 'mcp-local',
+  })
+
+  const firstAttempt = await postQuoteRequest(payloadForStoragePath(initialStoragePath))
+  if (firstAttempt.response.ok) {
+    return {
+      ok: true,
+      ...firstAttempt.result,
+    }
+  }
+
+  if (!isMissingUploadedFileResponse(firstAttempt.result)) {
+    return {
+      ok: false,
+      message: apiErrorMessage(firstAttempt.result),
+      error: apiErrorCode(firstAttempt.result),
+    }
+  }
+
   const uploaded = await upload(
-    `quote-requests/${Date.now()}-${safeBlobName(filename)}`,
+    deterministicStoragePath,
     blob,
     {
       access: 'private',
@@ -235,60 +406,38 @@ export async function submitLocalFileForQuote(input: z.infer<z.ZodObject<typeof 
       multipart: true,
     },
   )
+  const uploadedStoragePath = uploaded.pathname
 
-  const response = await fetch(endpoint(DEFAULT_API_BASE_URL, '/api/quote-requests'), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      submissionId,
-      name: input.name,
-      email: input.email,
-      phone: input.phone,
-      city: input.city,
-      country: input.country,
-      materialPreference: input.materialPreference,
-      quantity: input.quantity,
-      desiredDeadline: input.desiredDeadline,
-      notes: input.notes,
-      rightsConfirmed: input.rightsConfirmed,
-      restrictedItemConfirmed: input.restrictedItemConfirmed,
-      manualQuoteConfirmed: input.manualQuoteConfirmed,
-      userSubmissionConfirmed: input.userSubmissionConfirmed,
-      files: [
-        {
-          originalFilename: filename,
-          storedFilename: uploaded.pathname,
-          fileType: extension.replace('.', ''),
-          fileSizeBytes,
-          storageUrlOrKey: uploaded.pathname,
-          contentType,
-          contentHash,
-        },
-      ],
-      source: 'mcp-local',
-    }),
-  })
-
-  const result = (await response.json().catch(() => null)) as
-    | Record<string, unknown>
-    | null
-
-  if (!response.ok) {
+  if (
+    typeof uploadedStoragePath !== 'string' ||
+    !uploadedStoragePath.startsWith('quote-requests/')
+  ) {
     return {
       ok: false,
       message:
-        typeof result?.message === 'string'
-          ? result.message
-          : 'Quote request could not be submitted.',
-      error: typeof result?.error === 'string' ? result.error : 'submit_failed',
+        'Upload did not return a valid PrintYourDuck private file key. Please try again later.',
+      error: 'upload_path_invalid',
+    }
+  }
+
+  await rememberStoragePath({
+    submissionId,
+    contentHash,
+    storageUrlOrKey: uploadedStoragePath,
+  })
+
+  const secondAttempt = await postQuoteRequest(payloadForStoragePath(uploadedStoragePath))
+  if (!secondAttempt.response.ok) {
+    return {
+      ok: false,
+      message: apiErrorMessage(secondAttempt.result),
+      error: apiErrorCode(secondAttempt.result),
     }
   }
 
   return {
     ok: true,
-    ...result,
+    ...secondAttempt.result,
   }
 }
 
@@ -475,7 +624,21 @@ async function main() {
   await server.connect(new StdioServerTransport())
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+async function isEntrypoint() {
+  if (!process.argv[1]) return false
+
+  const modulePath = fileURLToPath(import.meta.url)
+  const [invokedPath, realModulePath] = await Promise.all([
+    fs.realpath(path.resolve(process.argv[1])).catch(() =>
+      path.resolve(process.argv[1] ?? ''),
+    ),
+    fs.realpath(modulePath).catch(() => modulePath),
+  ])
+
+  return invokedPath === realModulePath
+}
+
+if (await isEntrypoint()) {
   main().catch(() => {
     process.exitCode = 1
   })

@@ -2,7 +2,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,10 +30,15 @@ function structuredContent(result) {
   }
 }
 
-async function withClient({ cwd = root, env } = {}, callback) {
+async function withClient({
+  cwd = root,
+  env,
+  command = process.execPath,
+  args = [path.join(root, 'dist/index.js')],
+} = {}, callback) {
   const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [path.join(root, 'dist/index.js')],
+    command,
+    args,
     cwd,
     env,
     stderr: 'pipe',
@@ -136,6 +141,27 @@ try {
       throw new Error('get_printyourduck_quote_requirements is missing STL support.')
     }
   })
+
+  const binSmokeRoot = await mkdtemp(path.join(os.tmpdir(), 'printyourduck-mcp-bin-'))
+  try {
+    const binPath = path.join(binSmokeRoot, 'printyourduck-mcp')
+    await symlink(path.join(root, 'dist/index.js'), binPath)
+    await withClient(
+      {
+        command: process.execPath,
+        args: [binPath],
+      },
+      async (client) => {
+        const tools = await client.listTools()
+        const names = new Set(tools.tools.map((tool) => tool.name))
+        if (!names.has('submit_local_file_for_quote')) {
+          throw new Error('Symlinked package bin did not expose expected tools.')
+        }
+      },
+    )
+  } finally {
+    await rm(binSmokeRoot, { recursive: true, force: true })
+  }
 
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'printyourduck-mcp-smoke-'))
   const outsideRoot = await mkdtemp(path.join(os.tmpdir(), 'printyourduck-mcp-outside-'))
