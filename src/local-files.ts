@@ -41,6 +41,29 @@ export function isSubpath(root: string, candidate: string) {
   )
 }
 
+export async function realpathOrResolved(value: string) {
+  try {
+    return await fs.realpath(path.resolve(value))
+  } catch {
+    return path.resolve(value)
+  }
+}
+
+export async function resolvePathInsideAllowedRoots({
+  candidatePath,
+  allowedRoots,
+}: {
+  candidatePath: string
+  allowedRoots: string[]
+}) {
+  const [candidate, ...roots] = await Promise.all([
+    realpathOrResolved(candidatePath),
+    ...allowedRoots.map(realpathOrResolved),
+  ])
+
+  return roots.some((root) => isSubpath(root, candidate)) ? candidate : null
+}
+
 export type PrintableFileCandidate = {
   path: string
   filename: string
@@ -144,6 +167,10 @@ export function contentTypeForFilename(filename: string) {
   return 'application/octet-stream'
 }
 
+export function contentHashForFile(file: Uint8Array) {
+  return crypto.createHash('sha256').update(file).digest('hex')
+}
+
 export function safeBlobName(filename: string) {
   let safeName = ''
   let previousWasHyphen = false
@@ -176,7 +203,7 @@ export function submissionIdForLocalQuote({
   materialPreference: string
   quantity: number | string
 }) {
-  const fileHash = crypto.createHash('sha256').update(file).digest('hex')
+  const fileHash = contentHashForFile(file)
   const payload = JSON.stringify({
     fileHash,
     filename,

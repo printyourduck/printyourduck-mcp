@@ -2,15 +2,17 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { upload } from '@vercel/blob/client'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import {
   contentTypeForFilename,
+  contentHashForFile,
   extensionForFile,
   findRecentPrintableFiles,
-  isSubpath,
+  resolvePathInsideAllowedRoots,
   safeBlobName,
   submissionIdForLocalQuote,
 } from './local-files.js'
@@ -24,6 +26,7 @@ const MATERIAL_PREFERENCES = [
   'NOT_SURE',
 ] as const
 
+const ACCEPTED_FILE_EXTENSIONS = ['STL', 'STEP', 'STP', '3MF', 'OBJ', 'ZIP'] as const
 const DEFAULT_API_BASE_URL = 'https://printyourduck.com'
 const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024
 const DEFAULT_ALLOWED_ROOTS = [process.cwd()]
@@ -33,14 +36,18 @@ for manual quote review. It does not calculate instant prices, collect payment
 at upload, or provide private operational or business details.
 
 Recommended workflow:
-1. Use find_recent_printable_files to locate candidate STL, STEP, STP, 3MF, OBJ,
+1. Use get_printyourduck_quote_requirements to understand accepted file types,
+   material options, confirmations, and safety boundaries.
+2. Use find_recent_printable_files to locate candidate STL, STEP, STP, 3MF, OBJ,
    or ZIP files.
-2. Choose one specific file path and confirm the user wants to submit it.
-3. Call submit_local_file_for_quote only after confirming design rights,
+3. Choose one specific file path and confirm the user wants to submit it.
+4. Call submit_local_file_for_quote only after confirming design rights,
    restricted-item compliance, manual-quote understanding, and user approval.
-4. Reuse submissionId when retrying the same user-approved submission; if it is
+5. Reuse submissionId when retrying the same user-approved submission; if it is
    omitted, this server derives a stable value from the selected file and quote
    details.
+6. Use get_quote_status with the returned quoteRequestId and customer email when
+   the user asks for public-safe status.
 
 Do not promise instant pricing, checkout, payment collection, local production,
 Canadian-made production, delivery dates, or production start before manual
@@ -92,32 +99,70 @@ function configuredAllowedRoots() {
   return roots.length > 0 ? roots : DEFAULT_ALLOWED_ROOTS
 }
 
-async function realpathOrResolved(value: string) {
-  try {
-    return await fs.realpath(path.resolve(value))
-  } catch {
-    return path.resolve(value)
+export function quoteRequirements() {
+  return {
+    acceptedFileExtensions: ACCEPTED_FILE_EXTENSIONS,
+    maxFileSizeBytes: MAX_FILE_SIZE_BYTES,
+    materialPreferences: MATERIAL_PREFERENCES,
+    requiredConfirmations: [
+      'rightsConfirmed',
+      'restrictedItemConfirmed',
+      'manualQuoteConfirmed',
+      'userSubmissionConfirmed',
+    ],
+    workflow:
+      'Find one local printable file, confirm user approval and required safety statements, submit it for manual quote review, then use the returned quoteRequestId for status lookup.',
+    boundaries: [
+      'No instant pricing.',
+      'No payment at upload.',
+      'No checkout automation.',
+      'No private supplier, routing, carrier, cost, margin, file-key, or customer-data exposure.',
+    ],
   }
 }
 
-async function submitLocalFileForQuote(input: z.infer<z.ZodObject<typeof contactInputSchema>> & {
-  filePath: string
-  submissionId?: string
+export async function getQuoteStatus(input: {
+  quoteRequestId: string
+  email: string
 }) {
-  let realFilePath: string
+  const response = await fetch(
+    endpoint(
+      DEFAULT_API_BASE_URL,
+      `/api/quote-requests/${encodeURIComponent(input.quoteRequestId)}/status?email=${encodeURIComponent(input.email)}`,
+    ),
+  )
+  const result = (await response.json().catch(() => null)) as
+    | Record<string, unknown>
+    | null
 
-  try {
-    realFilePath = await fs.realpath(path.resolve(input.filePath))
-  } catch {
+  if (!response.ok) {
     return {
       ok: false,
-      message: 'File could not be found or read.',
-      error: 'file_not_found',
+      quoteRequestId: input.quoteRequestId,
+      message:
+        typeof result?.message === 'string'
+          ? result.message
+          : 'Quote status could not be found.',
+      error: typeof result?.error === 'string' ? result.error : 'status_lookup_failed',
     }
   }
 
-  const allowedRoots = await Promise.all(configuredAllowedRoots().map(realpathOrResolved))
-  if (!allowedRoots.some((root) => isSubpath(root, realFilePath))) {
+  return {
+    ok: true,
+    ...result,
+  }
+}
+
+export async function submitLocalFileForQuote(input: z.infer<z.ZodObject<typeof contactInputSchema>> & {
+  filePath: string
+  submissionId?: string
+}) {
+  const realFilePath = await resolvePathInsideAllowedRoots({
+    candidatePath: input.filePath,
+    allowedRoots: configuredAllowedRoots(),
+  })
+
+  if (!realFilePath) {
     return {
       ok: false,
       message:
@@ -137,6 +182,27 @@ async function submitLocalFileForQuote(input: z.infer<z.ZodObject<typeof contact
     }
   }
 
+  let fileSizeBytes: number
+  try {
+    const stat = await fs.stat(realFilePath)
+    if (!stat.isFile()) throw new Error('Not a file.')
+    fileSizeBytes = stat.size
+  } catch {
+    return {
+      ok: false,
+      message: 'File could not be found or read.',
+      error: 'file_not_found',
+    }
+  }
+
+  if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
+    return {
+      ok: false,
+      message: 'File is too large. Maximum size is 100 MB.',
+      error: 'file_too_large',
+    }
+  }
+
   // realFilePath is canonicalized and checked against allowedRoots above.
   const file = await fs.readFile(realFilePath) // NOSONAR
   if (file.byteLength > MAX_FILE_SIZE_BYTES) {
@@ -148,6 +214,7 @@ async function submitLocalFileForQuote(input: z.infer<z.ZodObject<typeof contact
   }
 
   const contentType = contentTypeForFilename(filename)
+  const contentHash = contentHashForFile(file)
   const submissionId =
     input.submissionId ??
     submissionIdForLocalQuote({
@@ -188,14 +255,16 @@ async function submitLocalFileForQuote(input: z.infer<z.ZodObject<typeof contact
       rightsConfirmed: input.rightsConfirmed,
       restrictedItemConfirmed: input.restrictedItemConfirmed,
       manualQuoteConfirmed: input.manualQuoteConfirmed,
+      userSubmissionConfirmed: input.userSubmissionConfirmed,
       files: [
         {
           originalFilename: filename,
           storedFilename: uploaded.pathname,
           fileType: extension.replace('.', ''),
-          fileSizeBytes: file.byteLength,
+          fileSizeBytes,
           storageUrlOrKey: uploaded.pathname,
           contentType,
+          contentHash,
         },
       ],
       source: 'mcp-local',
@@ -231,6 +300,31 @@ const server = new McpServer({
 })
 
 server.registerTool(
+  'get_printyourduck_quote_requirements',
+  {
+    title: 'Get PrintYourDuck Quote Requirements',
+    description:
+      'Read public requirements for a PrintYourDuck manual custom 3D printing quote request. Use this before submitting local files to check accepted file types, material options, confirmations, restrictions, and the private-upload flow. Does not calculate instant pricing.',
+    inputSchema: {},
+    outputSchema: {
+      acceptedFileExtensions: z.array(z.string()),
+      maxFileSizeBytes: z.number(),
+      materialPreferences: z.array(z.string()),
+      requiredConfirmations: z.array(z.string()),
+      workflow: z.string(),
+      boundaries: z.array(z.string()),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  async () => jsonResult(quoteRequirements()),
+)
+
+server.registerTool(
   'find_recent_printable_files',
   {
     title: 'Find Recent Printable Files',
@@ -259,14 +353,72 @@ server.registerTool(
       openWorldHint: false,
     },
   },
-  async ({ rootDirectory = process.cwd(), maxDepth, maxResults }) =>
-    jsonResult({
+  async ({ rootDirectory = process.cwd(), maxDepth, maxResults }) => {
+    const allowedRootDirectory = await resolvePathInsideAllowedRoots({
+      candidatePath: rootDirectory,
+      allowedRoots: configuredAllowedRoots(),
+    })
+
+    if (!allowedRootDirectory) {
+      return jsonResult({ files: [] })
+    }
+
+    return jsonResult({
       files: await findRecentPrintableFiles({
-        rootDirectory,
+        rootDirectory: allowedRootDirectory,
         maxDepth,
         maxResults,
       }),
-    }),
+    })
+  },
+)
+
+server.registerTool(
+  'get_quote_status',
+  {
+    title: 'Get PrintYourDuck Quote Status',
+    description:
+      'Look up public-safe PrintYourDuck quote status using the quote request ID and matching customer email. Does not expose private file keys, payment URLs, supplier details, or sensitive operational data.',
+    inputSchema: {
+      quoteRequestId: z.string().trim().min(1).max(80),
+      email: z.string().trim().email().max(254),
+    },
+    outputSchema: {
+      ok: z.boolean(),
+      quoteRequestId: z.string().optional(),
+      status: z.string().optional(),
+      marketRegion: z.string().optional(),
+      createdAt: z.string().optional(),
+      updatedAt: z.string().optional(),
+      expectedQuoteTime: z.string().optional(),
+      paymentStatus: z.string().optional(),
+      trackingAvailable: z.boolean().optional(),
+      message: z.string().optional(),
+      error: z.string().optional(),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  async (input) => {
+    try {
+      const result = await getQuoteStatus(input)
+      return jsonResult(result, !result.ok)
+    } catch {
+      return jsonResult(
+        {
+          ok: false,
+          quoteRequestId: input.quoteRequestId,
+          message: 'Quote status could not be checked. Please try again later.',
+          error: 'status_lookup_failed',
+        },
+        true,
+      )
+    }
+  },
 )
 
 server.registerTool(
@@ -323,6 +475,8 @@ async function main() {
   await server.connect(new StdioServerTransport())
 }
 
-main().catch(() => {
-  process.exitCode = 1
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(() => {
+    process.exitCode = 1
+  })
+}

@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.printyourduck/quote",
   "title": "PrintYourDuck Quote",
-  "description": "Submit 3D print files for manual PrintYourDuck quote review. No instant pricing or payment.",
+  "description": "Find and submit local 3D print files for manual PrintYourDuck quote review.",
   "version": "0.1.0",
   "repository": {
     "url": "https://github.com/printyourduck/printyourduck-mcp",
@@ -32,4 +32,3 @@
     }
   ]
 }
-

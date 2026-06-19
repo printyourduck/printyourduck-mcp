@@ -1,8 +1,7 @@
 {
   "name": "@printyourduck/mcp",
   "version": "0.1.0",
-  "private": true,
-  "description": "Local MCP helper for submitting 3D print files to PrintYourDuck manual quote review.",
+  "description": "MCP server for sending local 3D print files to PrintYourDuck manual quote review.",
   "type": "module",
   "homepage": "https://printyourduck.com",
   "repository": {
@@ -38,6 +37,7 @@
     "lint": "eslint .",
     "pack:dry-run": "npm pack --dry-run --json --ignore-scripts",
     "prepack": "pnpm build",
+    "smoke:live": "pnpm build && node scripts/live-smoke.mjs",
     "start": "node dist/index.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"

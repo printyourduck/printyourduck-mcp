@@ -74,7 +74,7 @@ jobs:
       - name: Scan MCP tool metadata
         id: mcp_scan
         continue-on-error: true
-        run: npx -y @agentdefenders/mcp-scan@0.5.0-alpha --config .github/mcp-scan.json --format sarif --fail-on high > mcp-scan.sarif
+        run: npx -y @agentdefenders/mcp-scan@0.5.0-alpha --config .github/mcp-scan.json --format sarif --fail-on high --ci --quiet > mcp-scan.sarif
 
       - name: Upload MCP scan SARIF
         uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
@@ -85,4 +85,3 @@ jobs:
       - name: Fail on MCP scan findings
         if: steps.mcp_scan.outcome == 'failure'
         run: exit 1
-

@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest an MCP workflow, client support, or public-safe improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public safety check
+      options:
+        - label: I did not include secrets, customer files, private file references, supplier/cost/margin details, or dashboard screenshots.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or MCP-client workflow should this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful public-safe behavior change.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Product boundary
+      options:
+        - label: This does not require instant checkout or payment at upload.
+          required: true
+        - label: This does not require exposing supplier, routing, carrier, cost, margin, customer-file, or private operational details.
+          required: true

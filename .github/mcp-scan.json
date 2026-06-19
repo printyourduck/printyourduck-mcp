@@ -1,5 +1,5 @@
 {
-  "servers": {
+  "mcpServers": {
     "printyourduck": {
       "command": "node",
       "args": ["dist/index.js"]

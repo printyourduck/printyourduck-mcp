@@ -23,6 +23,7 @@ env:
   NODE_VERSION: 24
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/printyourduck-mcp
   LOCAL_IMAGE_NAME: printyourduck-mcp:release-candidate
+  MCP_REGISTRY_DOMAIN: printyourduck.com
   MCP_PUBLISHER_VERSION: 1.7.9
   MCP_PUBLISHER_LINUX_AMD64_SHA256: ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac
   GITLEAKS_VERSION: 8.30.1
@@ -182,7 +183,15 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Authenticate to MCP Registry
-        run: mcp-publisher login github-oidc
+        env:
+          MCP_REGISTRY_PRIVATE_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MCP_REGISTRY_PRIVATE_KEY:-}" ]]; then
+            echo "::error::MCP_REGISTRY_PRIVATE_KEY is required for com.printyourduck/quote registry publication."
+            exit 1
+          fi
+          mcp-publisher login http --domain "${MCP_REGISTRY_DOMAIN}" --private-key "${MCP_REGISTRY_PRIVATE_KEY}"
 
       - name: Validate MCP Registry metadata
         run: mcp-publisher validate
@@ -241,6 +250,9 @@ jobs:
         run: gh release view "mcp-v${VERSION}" >/dev/null 2>&1 || gh release create "mcp-v${VERSION}" --generate-notes --verify-tag
 
       - name: Publish MCP Registry metadata
+        env:
+          MCP_REGISTRY_PRIVATE_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
         run: |
-          mcp-publisher login github-oidc
+          set -euo pipefail
+          mcp-publisher login http --domain "${MCP_REGISTRY_DOMAIN}" --private-key "${MCP_REGISTRY_PRIVATE_KEY}"
           mcp-publisher publish
