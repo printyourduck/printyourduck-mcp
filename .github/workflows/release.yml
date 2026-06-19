@@ -5,12 +5,6 @@ on:
     tags:
       - mcp-v*
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Run release validation without publishing.
-        required: true
-        default: true
-        type: boolean
 
 concurrency:
   group: mcp-release-${{ github.ref }}
