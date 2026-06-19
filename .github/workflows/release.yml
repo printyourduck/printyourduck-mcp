@@ -77,6 +77,17 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "package_private=${package_private}" >> "${GITHUB_OUTPUT}"
 
+          {
+            echo "### Release mode"
+            echo
+            echo "- package version: ${package_version}"
+            echo "- resolved version: ${version}"
+            echo "- publish artifacts: ${publish}"
+            echo "- package private: ${package_private}"
+            echo "- event: ${GITHUB_EVENT_NAME}"
+            echo "- ref: ${GITHUB_REF_NAME}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -217,7 +228,7 @@ jobs:
             exit 0
           fi
 
-          npm publish --access public
+          npm publish --access public --provenance
 
       - name: Attest npm package archive
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32
@@ -257,5 +268,8 @@ jobs:
           MCP_REGISTRY_PRIVATE_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
         run: |
           set -euo pipefail
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          npm view "${package_name}@${package_version}" version >/dev/null
           mcp-publisher login http --domain "${MCP_REGISTRY_DOMAIN}" --private-key "${MCP_REGISTRY_PRIVATE_KEY}"
           mcp-publisher publish
