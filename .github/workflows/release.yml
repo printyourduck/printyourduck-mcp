@@ -154,6 +154,7 @@ jobs:
     if: needs.checks.outputs.publish == 'true' && needs.checks.outputs.package_private != 'true'
     needs: checks
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       attestations: write
       contents: write
@@ -201,6 +202,18 @@ jobs:
       - name: Validate MCP Registry metadata
         run: mcp-publisher validate
 
+      - name: Verify GHCR package is public before publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          package_json="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/printyourduck-mcp")"
+          visibility="$(node -e "const fs = require('node:fs'); const data = JSON.parse(fs.readFileSync(0, 'utf8')); process.stdout.write(data.visibility || '')" <<< "${package_json}")"
+          if [[ "${visibility}" != "public" ]]; then
+            echo "::error::GHCR package ghcr.io/${GITHUB_REPOSITORY_OWNER}/printyourduck-mcp is ${visibility:-unknown}. Set package visibility to public in GitHub before tagging a release."
+            exit 1
+          fi
+
       - name: Pack npm package
         id: pack
         shell: bash
@@ -212,16 +225,26 @@ jobs:
 
       - name: Publish npm package
         shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           package_name="$(node -p "require('./package.json').name")"
           package_version="$(node -p "require('./package.json').version")"
 
           if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
-            echo "${package_name}@${package_version} is already published; skipping npm publish."
+            existing_git_head="$(npm view "${package_name}@${package_version}" gitHead --json | node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync(0,'utf8') || 'null'); process.stdout.write(value || '')")"
+            if [[ "${existing_git_head}" != "${GITHUB_SHA}" ]]; then
+              echo "::error::${package_name}@${package_version} is already published from gitHead ${existing_git_head}, not this release commit ${GITHUB_SHA}."
+              exit 1
+            fi
+            echo "${package_name}@${package_version} is already published from this release commit; skipping npm publish."
             exit 0
           fi
 
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            unset NODE_AUTH_TOKEN
+          fi
           npm publish --access public --provenance
 
       - name: Attest npm package archive
@@ -267,3 +290,43 @@ jobs:
           npm view "${package_name}@${package_version}" version >/dev/null
           mcp-publisher login http --domain "${MCP_REGISTRY_DOMAIN}" --private-key "${MCP_REGISTRY_PRIVATE_KEY}"
           mcp-publisher publish
+
+      - name: Verify published artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.checks.outputs.version }}
+        run: |
+          set -euo pipefail
+          package_name="$(node -p "require('./package.json').name")"
+
+          npm_version="$(npm view "${package_name}@${VERSION}" version)"
+          if [[ "${npm_version}" != "${VERSION}" ]]; then
+            echo "::error::npm published version ${npm_version} does not match ${VERSION}."
+            exit 1
+          fi
+
+          npm_git_head="$(npm view "${package_name}@${VERSION}" gitHead --json | node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync(0,'utf8') || 'null'); process.stdout.write(value || '')")"
+          if [[ "${npm_git_head}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::npm gitHead ${npm_git_head} does not match release commit ${GITHUB_SHA}."
+            exit 1
+          fi
+
+          gh release view "mcp-v${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null
+
+          registry_ok="false"
+          for attempt in {1..12}; do
+            if registry_json="$(curl -fsSL "https://registry.modelcontextprotocol.io/v0/servers/com.printyourduck%2Fquote/versions")" && \
+              REGISTRY_JSON="${registry_json}" VERSION="${VERSION}" node -e "const data = JSON.parse(process.env.REGISTRY_JSON || '{}'); const version = process.env.VERSION; const entry = (data.servers || []).find((candidate) => { const server = candidate.server || {}; const npmPackage = (server.packages || []).find((pkg) => pkg.registryType === 'npm' && pkg.identifier === '@printyourduck/mcp'); return server.name === 'com.printyourduck/quote' && server.version === version && npmPackage && npmPackage.version === version; }); if (!entry) throw new Error('MCP Registry has not published com.printyourduck/quote@' + version);"
+            then
+              registry_ok="true"
+              break
+            fi
+            sleep 5
+          done
+          if [[ "${registry_ok}" != "true" ]]; then
+            echo "::error::MCP Registry did not expose ${VERSION} after publish."
+            exit 1
+          fi
+
+          anonymous_docker_config="$(mktemp -d)"
+          DOCKER_CONFIG="${anonymous_docker_config}" docker manifest inspect "${IMAGE_NAME}:${VERSION}" >/dev/null

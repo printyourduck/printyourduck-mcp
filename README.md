@@ -210,6 +210,15 @@ PRINTYOURDUCK_MCP_LIVE_SMOKE=1 PRINTYOURDUCK_MCP_SMOKE_EMAIL=operator@example.co
 Release npm package changes from this dedicated MCP repository, not from the
 website repository.
 
+For each tagged release, verify the npm package was published from the tagged
+commit:
+
+```bash
+VERSION="$(node -p "require('./package.json').version")"
+test "$(npm view "@printyourduck/mcp@${VERSION}" gitHead)" = "$(git rev-parse HEAD)"
+npm view "@printyourduck/mcp@${VERSION}" dist.tarball dist.integrity
+```
+
 The MCP Registry name is `com.printyourduck/quote`, so publication uses
 domain-based HTTP authentication for `printyourduck.com`. Serve the public
 `v=MCPv1; ...` record from `https://printyourduck.com/.well-known/mcp-registry-auth`
@@ -222,12 +231,17 @@ Only claim MCP Registry publication after this passes:
 curl -f "https://registry.modelcontextprotocol.io/v0/servers/com.printyourduck%2Fquote/versions"
 ```
 
+Before tagging a release, make the GHCR package public in GitHub's package
+settings. The release workflow fails before publishing npm if
+`ghcr.io/printyourduck/printyourduck-mcp` is still private, because the public
+release must be anonymously pullable.
+
 Only claim OCI/container installability after making package visibility public
 and running:
 
 ```bash
 VERSION="$(node -p "require('./package.json').version")"
-docker manifest inspect "ghcr.io/printyourduck/printyourduck-mcp:${VERSION}"
+DOCKER_CONFIG="$(mktemp -d)" docker manifest inspect "ghcr.io/printyourduck/printyourduck-mcp:${VERSION}"
 ```
 
 ## Contributing

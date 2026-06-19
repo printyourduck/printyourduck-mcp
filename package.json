@@ -1,6 +1,6 @@
 {
   "name": "@printyourduck/mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server for sending local 3D print files to PrintYourDuck manual quote review.",
   "type": "module",
   "homepage": "https://printyourduck.com",
