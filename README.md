@@ -24,7 +24,7 @@ to supply an API URL, API key, or shop routing configuration.
 | Local stdio package | Available via npm as `@printyourduck/mcp` |
 | npm package | Public: `@printyourduck/mcp` |
 | OCI image | Release target: `ghcr.io/printyourduck/printyourduck-mcp:<version>` |
-| MCP Registry | Publish target: `com.printyourduck/quote` |
+| MCP Registry | Live as `com.printyourduck/quote` |
 
 `npx` is the primary install path today. Use Docker only after verifying the
 GHCR image is publicly pullable for the target version.
@@ -53,7 +53,25 @@ Use this now:
 npx -y @printyourduck/mcp
 ```
 
-Most stdio-capable MCP clients use a configuration like this:
+For team-shared or reproducible client configs, pin a package version:
+
+```bash
+npx -y @printyourduck/mcp@<version>
+```
+
+## Client Setup
+
+MCP client configuration files are not identical across clients. Use the shape
+expected by your client, then restart or refresh that client so it reloads the
+server.
+
+Claude Code, local user setup:
+
+```bash
+claude mcp add --transport stdio printyourduck -- npx -y @printyourduck/mcp
+```
+
+Claude Code, project-shared `.mcp.json`:
 
 ```json
 {
@@ -66,6 +84,32 @@ Most stdio-capable MCP clients use a configuration like this:
 }
 ```
 
+Use project-shared `.mcp.json` only when a repository should intentionally
+offer PrintYourDuck tools to everyone opening that project. Claude Code prompts
+for approval before using project-scoped MCP servers.
+
+VS Code workspace setup in `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "printyourduck": {
+      "command": "npx",
+      "args": ["-y", "@printyourduck/mcp"]
+    }
+  }
+}
+```
+
+Clients that use the common `mcpServers` shape can use the Claude Code project
+snippet above.
+
+Test the local server with MCP Inspector:
+
+```bash
+npx -y @modelcontextprotocol/inspector npx -y @printyourduck/mcp
+```
+
 Docker, after verifying the GHCR image is public:
 
 ```bash
@@ -76,6 +120,12 @@ Remote-capable MCP clients can connect today:
 
 ```text
 https://printyourduck.com/api/mcp
+```
+
+Claude Code remote HTTP setup:
+
+```bash
+claude mcp add --transport http printyourduck https://printyourduck.com/api/mcp
 ```
 
 ## Tools
