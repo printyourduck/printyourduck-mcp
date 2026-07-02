@@ -44,7 +44,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@vercel/blob": "2.4.0",
+    "@vercel/blob": "2.5.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
