@@ -43,8 +43,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0",
-    "@vercel/blob": "2.4.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@vercel/blob": "2.6.1",
     "zod": "4.4.3"
   },
   "devDependencies": {
